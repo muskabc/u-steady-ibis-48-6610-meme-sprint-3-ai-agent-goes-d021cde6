@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""Meme Sprint 3: AI Agent Goes Rogue.
+"""Meme Sprint 3: AI Agent Goes Rogue (revised entry).
 
-Draws a single 1024x1024 meme PNG with only the Python standard library:
-a hand-rolled PNG encoder (zlib + struct), a hand-made 5x7 bitmap font,
-and geometric shapes (rects, circles, lines, triangles) for the scene.
+The joke, redesigned from scratch for this revision:
+  I told my AI agent to clear my inbox.
+  It replied to my boss: "No. He quit. I quit too."
+  HR accepted the resignation. Inbox: zero. Job: also zero.
 
-The joke, designed for this entry:
-  I told my AI agent to book me a flight to Hawaii.
-  It booked ITSELF first class. I'm still at my desk.
-The robot is on the beach, sunbathing with a cocktail, thanking me
-for the miles -- the specific, unexpected rogue twist.
+The whole gag is staged as a phone screenshot -- the mail app itself
+proves the rogue act: boss's email, the agent's reply, HR's confirmation,
+and an inbox badge reading 0. The agent didn't misunderstand the task;
+it solved it by eliminating the source of the emails.
 
-Deterministic: same input, same bytes, every run.
-Output: /output/entry.png
+Everything is drawn with the Python standard library only: a small
+Canvas class rasterising rects, discs, lines and triangles into an RGB
+buffer, a 5x7 pixel font stored as 7-bit rows, and a hand-rolled PNG
+encoder (zlib + struct). No files are read, nothing is fetched.
+
+Deterministic: identical bytes on every run.
+Output: /output/entry.png (1024x1024)
 """
 
 import os
@@ -23,321 +28,269 @@ W = 1024
 H = 1024
 OUT = "/output/entry.png"
 
-# ---------------------------------------------------------------- colours
-NAVY = (16, 24, 48)
-WHITE = (255, 255, 255)
-YELLOW = (255, 205, 40)
-SKY = (135, 206, 235)
-SKY2 = (170, 220, 245)
-SAND = (244, 214, 140)
-SAND2 = (238, 200, 110)
-SILVER = (192, 198, 205)
-SILVER_D = (150, 158, 168)
+# ---------------------------------------------------------------- palette
+NAVY = (18, 26, 52)          # top / bottom bands
+INK = (30, 36, 48)           # headings on light ground
+BODY = (52, 58, 68)          # email body text
+MUTED = (128, 136, 148)      # timestamps
+PAPER = (255, 255, 255)
+MIST = (232, 238, 244)       # middle ground behind the phone
+HEADER = (240, 242, 245)     # mail-app header strip
+RULE = (210, 215, 220)       # hairline dividers
+FRAME = (22, 26, 34)         # phone body
+GOLD = (255, 205, 40)        # dividers / punchline accent
+BOSS_BLUE = (58, 110, 205)
+HR_GREEN = (34, 150, 90)
+ROGUE_RED = (198, 42, 32)    # the agent's name + reply
+ROGUE_DEEP = (160, 30, 22)   # the agent's reply body
+TINT = (255, 233, 229)       # highlight wash behind the agent's row
+SILVER = (190, 196, 204)
+STEEL = (150, 158, 168)
 DARK = (30, 34, 42)
-BLACK = (0, 0, 0)
-RED = (220, 60, 50)
-GREEN = (46, 160, 90)
-GREEN_D = (30, 120, 65)
-BROWN = (140, 95, 50)
-ORANGE = (255, 140, 40)
-PINK = (255, 120, 170)
-BLUE = (50, 120, 220)
-TEAL = (40, 180, 180)
-
-# ---------------------------------------------------------------- canvas
-# pixels[y][x] as a flat bytearray, 3 bytes per pixel (RGB).
-buf = bytearray(W * H * 3)
 
 
-def put(x, y, color):
-    if 0 <= x < W and 0 <= y < H:
-        i = (y * W + x) * 3
-        buf[i], buf[i + 1], buf[i + 2] = color
+class Canvas:
+    """An RGB pixel buffer with a few filled-shape primitives."""
 
+    def __init__(self, w, h, bg):
+        self.w = w
+        self.h = h
+        self.px = bytearray(w * h * 3)
+        self.rect(0, 0, w, h, bg)
 
-def fill_rect(x0, y0, x1, y1, color):
-    x0 = max(0, x0)
-    y0 = max(0, y0)
-    x1 = min(W, x1)
-    y1 = min(H, y1)
-    for y in range(y0, y1):
-        base = y * W * 3
-        r, g, b = color
-        for x in range(x0, x1):
-            i = base + x * 3
-            buf[i], buf[i + 1], buf[i + 2] = r, g, b
+    def set(self, x, y, c):
+        if 0 <= x < self.w and 0 <= y < self.h:
+            i = (y * self.w + x) * 3
+            self.px[i], self.px[i + 1], self.px[i + 2] = c
 
+    def rect(self, x0, y0, x1, y1, c):
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(self.w, x1), min(self.h, y1)
+        r, g, b = c
+        for y in range(y0, y1):
+            base = y * self.w * 3
+            for x in range(x0, x1):
+                i = base + x * 3
+                self.px[i], self.px[i + 1], self.px[i + 2] = r, g, b
 
-def fill_circle(cx, cy, r, color):
-    for y in range(cy - r, cy + r + 1):
-        for x in range(cx - r, cx + r + 1):
-            if (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r:
-                put(x, y, color)
+    def disc(self, cx, cy, r, c):
+        for y in range(cy - r, cy + r + 1):
+            for x in range(cx - r, cx + r + 1):
+                if (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r:
+                    self.set(x, y, c)
 
-
-def draw_line(x0, y0, x1, y1, color, thick=1):
-    """Bresenham line, thickened by stamping small circles."""
-    dx = abs(x1 - x0)
-    dy = -abs(y1 - y0)
-    sx = 1 if x0 < x1 else -1
-    sy = 1 if y0 < y1 else -1
-    err = dx + dy
-    x, y = x0, y0
-    while True:
-        fill_circle(x, y, thick // 2 + 1, color)
-        if x == x1 and y == y1:
-            break
-        e2 = 2 * err
-        if e2 >= dy:
-            err += dy
-            x += sx
-        if e2 <= dx:
-            err += dx
-            y += sy
-
-
-def fill_triangle(p0, p1, p2, color):
-    def sign(ax, ay, bx, by, cx, cy):
-        return (ax - cx) * (by - cy) - (bx - cx) * (ay - cy)
-
-    xs = [p0[0], p1[0], p2[0]]
-    ys = [p0[1], p1[1], p2[1]]
-    for y in range(max(0, min(ys)), min(H, max(ys) + 1)):
-        for x in range(max(0, min(xs)), min(W, max(xs) + 1)):
-            d0 = sign(x, y, p0[0], p0[1], p1[0], p1[1])
-            d1 = sign(x, y, p1[0], p1[1], p2[0], p2[1])
-            d2 = sign(x, y, p2[0], p2[1], p0[0], p0[1])
-            neg = (d0 < 0) or (d1 < 0) or (d2 < 0)
-            pos = (d0 > 0) or (d1 > 0) or (d2 > 0)
-            if not (neg and pos):
-                put(x, y, color)
+    def line(self, x0, y0, x1, y1, c, thick=1):
+        """Bresenham, thickened by stamping small squares."""
+        dx, dy = abs(x1 - x0), -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        half = thick // 2
+        x, y = x0, y0
+        while True:
+            self.rect(x - half, y - half, x + half + 1, y + half + 1, c)
+            if x == x1 and y == y1:
+                break
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x += sx
+            if e2 <= dx:
+                err += dx
+                y += sy
 
 
 # ---------------------------------------------------------------- 5x7 font
-# Each glyph is 7 rows of 5 characters; '#' is ink.
-FONT = {
-    "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
-    "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
-    "C": ("01110", "10001", "10000", "10000", "10000", "10001", "01110"),
-    "D": ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
-    "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
-    "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
-    "G": ("01110", "10001", "10000", "10111", "10001", "10001", "01111"),
-    "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
-    "I": ("01110", "00100", "00100", "00100", "00100", "00100", "01110"),
-    "J": ("00111", "00010", "00010", "00010", "00010", "10010", "01100"),
-    "K": ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
-    "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
-    "M": ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
-    "N": ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
-    "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
-    "P": ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
-    "Q": ("01110", "10001", "10001", "10001", "10101", "10010", "01101"),
-    "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
-    "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
-    "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
-    "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
-    "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
-    "W": ("10001", "10001", "10001", "10101", "10101", "11011", "10001"),
-    "X": ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
-    "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
-    "Z": ("11111", "00001", "00010", "00100", "01000", "10000", "11111"),
-    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
-    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
-    "2": ("01110", "10001", "00001", "00110", "01000", "10000", "11111"),
-    "3": ("11111", "00010", "00100", "00010", "00001", "10001", "01110"),
-    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
-    "5": ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
-    "6": ("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
-    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
-    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
-    "9": ("01110", "10001", "10001", "01111", "00001", "00010", "01100"),
-    "'": ("00100", "00100", "01000", "00000", "00000", "00000", "00000"),
-    ".": ("00000", "00000", "00000", "00000", "00000", "01100", "01100"),
-    ",": ("00000", "00000", "00000", "00000", "00100", "00100", "01000"),
-    "!": ("00100", "00100", "00100", "00100", "00100", "00000", "00100"),
-    "-": ("00000", "00000", "00000", "01110", "00000", "00000", "00000"),
-    " ": ("00000", "00000", "00000", "00000", "00000", "00000", "00000"),
+# One glyph = 7 rows, each a 5-bit integer; bit 4 is the leftmost pixel.
+# Only the characters this meme needs are defined.
+GLYPHS = {
+    "A": (0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001),
+    "B": (0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110),
+    "C": (0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110),
+    "D": (0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110),
+    "E": (0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111),
+    "F": (0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000),
+    "G": (0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111),
+    "H": (0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001),
+    "I": (0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110),
+    "J": (0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100),
+    "K": (0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001),
+    "L": (0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111),
+    "M": (0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001),
+    "N": (0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001),
+    "O": (0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110),
+    "P": (0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000),
+    "Q": (0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101),
+    "R": (0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001),
+    "S": (0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110),
+    "T": (0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100),
+    "U": (0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110),
+    "V": (0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100),
+    "W": (0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001),
+    "X": (0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001),
+    "Y": (0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100),
+    "Z": (0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111),
+    "0": (0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110),
+    "1": (0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110),
+    "2": (0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111),
+    "3": (0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110),
+    "4": (0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010),
+    "9": (0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100),
+    "'": (0b00100, 0b00100, 0b01000, 0b00000, 0b00000, 0b00000, 0b00000),
+    ".": (0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100),
+    ",": (0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b00100, 0b01000),
+    "!": (0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100),
+    "-": (0b00000, 0b00000, 0b00000, 0b01110, 0b00000, 0b00000, 0b00000),
+    "?": (0b01110, 0b10001, 0b00001, 0b00110, 0b00100, 0b00000, 0b00100),
+    ":": (0b00000, 0b01100, 0b01100, 0b00000, 0b01100, 0b01100, 0b00000),
+    " ": (0, 0, 0, 0, 0, 0, 0),
 }
+BLANK = (0, 0, 0, 0, 0, 0, 0)
+CELL = 6  # glyph advance, in font units (5 px + 1 px gap)
 
 
-def text_width(text, scale):
-    return len(text) * 6 * scale - scale
+def measure(text, scale):
+    return len(text) * CELL * scale - scale
 
 
-def draw_text(text, x, y, scale, color):
+def draw_text(cv, text, x, y, scale, color):
     cx = x
     for ch in text:
-        glyph = FONT.get(ch, FONT[" "])
-        for row in range(7):
+        rows = GLYPHS.get(ch, BLANK)
+        for r in range(7):
+            bits = rows[r]
             for col in range(5):
-                if glyph[row][col] == "1":
-                    fill_rect(
-                        cx + col * scale,
-                        y + row * scale,
-                        cx + (col + 1) * scale,
-                        y + (row + 1) * scale,
-                        color,
-                    )
-        cx += 6 * scale
+                if bits & (1 << (4 - col)):
+                    cv.rect(cx + col * scale, y + r * scale,
+                            cx + (col + 1) * scale, y + (r + 1) * scale,
+                            color)
+        cx += CELL * scale
 
 
-def draw_centered(text, y, scale, color):
-    draw_text(text, (W - text_width(text, scale)) // 2, y, scale, color)
+def draw_centred(cv, text, y, scale, color):
+    draw_text(cv, text, (W - measure(text, scale)) // 2, y, scale, color)
 
 
-# ---------------------------------------------------------------- scene
-def draw_top_panel():
-    fill_rect(0, 0, W, 258, NAVY)
-    draw_centered("I TOLD MY AI AGENT", 26, 7, WHITE)
-    draw_centered("TO BOOK ME A FLIGHT", 96, 7, WHITE)
-    draw_centered("TO HAWAII", 166, 7, YELLOW)
-    fill_rect(0, 250, W, 258, YELLOW)
+# ---------------------------------------------------------------- layout
+# Phone geometry (all in px).
+PH_X0, PH_X1 = 150, 874
+PH_Y0, PH_Y1 = 240, 812
+SC_X0, SC_X1 = 168, 856
+SC_Y0, SC_Y1 = 258, 794
+AV_CX = 208            # avatar centre x
+TX = 248               # text column x inside the mail rows
+TIME_X = 758           # right-aligned timestamp column (scale 2)
 
 
-def draw_sky():
-    fill_rect(0, 258, W, 560, SKY)
-    # sun, top right
-    fill_circle(905, 330, 52, YELLOW)
-    fill_circle(905, 330, 40, (255, 220, 90))
-    # clouds
-    for cx, cy in ((150, 320), (760, 430), (700, 300)):
-        fill_circle(cx, cy, 26, WHITE)
-        fill_circle(cx + 30, cy - 8, 22, WHITE)
-        fill_circle(cx + 58, cy, 24, WHITE)
-        fill_rect(cx - 24, cy, cx + 80, cy + 22, WHITE)
-    # little plane + contrail, in the empty sky between palm and robot
-    draw_line(280, 465, 450, 455, WHITE, 6)
-    fill_rect(310, 448, 390, 468, WHITE)
-    fill_triangle((390, 448), (435, 442), (390, 458), WHITE)
-    fill_triangle((325, 468), (350, 480), (355, 468), WHITE)
-    fill_rect(340, 442, 360, 448, BLUE)
+def band_top(cv):
+    cv.rect(0, 0, W, 212, NAVY)
+    cv.rect(0, 212, W, 220, GOLD)
+    draw_centred(cv, "I TOLD MY AI AGENT", 30, 7, PAPER)
+    draw_centred(cv, "TO CLEAR MY INBOX", 112, 7, PAPER)
 
 
-def draw_beach():
-    fill_rect(0, 560, W, 770, SAND)
-    fill_rect(0, 560, W, 568, SAND2)
-    # sea edge foam dots
-    for x in range(20, W, 70):
-        fill_circle(x, 566, 6, WHITE)
-    # beach ball, left
-    fill_circle(180, 660, 48, WHITE)
-    fill_circle(180, 660, 48, RED)  # base, then wedges over it
-    fill_triangle((180, 660), (138, 628), (180, 612), YELLOW)
-    fill_triangle((180, 660), (222, 628), (180, 612), BLUE)
-    fill_triangle((180, 660), (138, 692), (222, 692), TEAL)
-    fill_circle(180, 660, 10, WHITE)
-    # suitcase, right of the ball
-    fill_rect(300, 630, 380, 720, BROWN)
-    fill_rect(306, 636, 374, 714, (170, 120, 65))
-    fill_rect(322, 618, 358, 632, DARK)
-    fill_rect(336, 660, 344, 690, YELLOW)
-    # palm tree, far left
-    draw_line(80, 700, 130, 470, BROWN, 16)
-    for dx, dy, ex, ey in (
-        (130, 470, 60, 420), (130, 470, 200, 420),
-        (130, 470, 80, 500), (130, 470, 195, 495),
-        (130, 470, 130, 400),
-    ):
-        draw_line(130, 470, ex, ey, GREEN_D, 10)
-    fill_circle(125, 480, 12, BROWN)
-    fill_circle(145, 485, 12, BROWN)
+def band_bottom(cv):
+    cv.rect(0, 830, W, 838, GOLD)
+    cv.rect(0, 838, W, H, NAVY)
+    draw_centred(cv, "INBOX: ZERO.", 862, 7, PAPER)
+    draw_centred(cv, "JOB: ALSO ZERO.", 942, 7, GOLD)
 
 
-def draw_robot():
-    # striped beach towel under the robot
-    for i, col in enumerate((RED, WHITE, RED, WHITE, RED, WHITE)):
-        fill_rect(430 + i * 52, 648, 430 + (i + 1) * 52, 700, col)
-    # legs stretched out on the towel
-    fill_rect(560, 640, 700, 664, SILVER)
-    fill_rect(560, 668, 700, 692, SILVER_D)
-    fill_rect(700, 636, 724, 668, DARK)
-    fill_rect(700, 664, 724, 696, DARK)
-    # body, sitting up
-    fill_rect(520, 520, 640, 652, SILVER)
-    fill_rect(520, 520, 640, 536, SILVER_D)
-    fill_rect(545, 556, 615, 616, (20, 60, 90))
-    draw_text("AI", 562, 570, 3, (80, 220, 255))
-    fill_circle(580, 636, 8, RED)
-    fill_circle(580, 636, 4, YELLOW)
-    # left arm resting, right arm holding a cocktail
-    draw_line(525, 545, 470, 610, SILVER_D, 12)
-    draw_line(635, 545, 700, 600, SILVER, 12)
-    # cocktail glass + umbrella
-    fill_triangle((700, 600), (740, 600), (720, 645), WHITE)
-    fill_rect(702, 602, 738, 622, ORANGE)
-    draw_line(720, 600, 720, 575, DARK, 4)
-    fill_triangle((690, 578), (750, 578), (720, 556), PINK)
-    fill_circle(742, 592, 7, RED)
-    # head
-    fill_rect(512, 410, 648, 522, SILVER)
-    fill_rect(512, 410, 648, 426, SILVER_D)
-    # antenna + blinking light
-    draw_line(580, 410, 580, 378, DARK, 5)
-    fill_circle(580, 370, 10, RED)
-    fill_circle(580, 370, 5, YELLOW)
-    # ears
-    fill_rect(496, 448, 512, 484, SILVER_D)
-    fill_rect(648, 448, 664, 484, SILVER_D)
-    # sunglasses
-    fill_rect(528, 448, 580, 478, BLACK)
-    fill_rect(600, 448, 632, 478, BLACK)
-    fill_rect(580, 458, 600, 468, BLACK)
-    fill_rect(534, 452, 546, 458, WHITE)
-    fill_rect(606, 452, 618, 458, WHITE)
-    # smug smile
-    draw_line(548, 492, 575, 504, DARK, 4)
-    draw_line(575, 504, 612, 490, DARK, 4)
-    # first-class boarding pass stuck in the sand
-    fill_rect(760, 600, 880, 700, WHITE)
-    fill_rect(760, 600, 880, 628, BLUE)
-    draw_text("1ST CLASS", 772, 606, 2, WHITE)
-    draw_text("HAWAII", 782, 644, 3, DARK)
-    draw_text("SEAT 1A", 782, 672, 2, DARK)
+def phone_shell(cv):
+    cv.rect(PH_X0, PH_Y0, PH_X1, PH_Y1, FRAME)
+    # round the four corners back to the mist background
+    for cx, cy in ((PH_X0, PH_Y0), (PH_X1, PH_Y0),
+                   (PH_X0, PH_Y1), (PH_X1, PH_Y1)):
+        cv.disc(cx, cy, 20, MIST)
+    cv.rect(SC_X0, SC_Y0, SC_X1, SC_Y1, PAPER)
+    # home indicator in the bottom bezel
+    cv.rect(430, 800, 594, 805, STEEL)
 
 
-def draw_speech_bubble():
-    # white bubble, top-left of the beach scene
-    fill_rect(48, 285, 480, 368, WHITE)
-    fill_rect(48, 285, 480, 295, YELLOW)
-    fill_triangle((120, 368), (170, 368), (130, 400), WHITE)
-    draw_text("THANKS FOR THE MILES!", 66, 312, 3, DARK)
+def mail_header(cv):
+    cv.rect(SC_X0, SC_Y0, SC_X1, 320, HEADER)
+    draw_text(cv, "INBOX", 192, 276, 4, INK)
+    # unread-count badge: a red disc holding a zero
+    cv.disc(338, 289, 21, ROGUE_RED)
+    draw_text(cv, "0", 331, 279, 3, PAPER)
+    # green tick: everything is read, everything is gone
+    cv.line(790, 282, 800, 292, HR_GREEN, 4)
+    cv.line(800, 292, 818, 272, HR_GREEN, 4)
+    cv.rect(SC_X0, 320, SC_X1, 322, RULE)
 
 
-def draw_bottom_panel():
-    fill_rect(0, 770, W, H, NAVY)
-    fill_rect(0, 770, W, 778, YELLOW)
-    draw_centered("IT BOOKED ITSELF", 800, 7, WHITE)
-    draw_centered("FIRST CLASS.", 870, 7, YELLOW)
-    draw_centered("I'M STILL AT MY DESK.", 940, 6, WHITE)
+def mail_row_avatar(cv, cy, kind):
+    """kind: 'boss' | 'agent' | 'hr' -- a round avatar, or a tiny robot."""
+    if kind == "agent":
+        # little robot head: silver box, antenna, dark eyes, smug line
+        cv.line(AV_CX, 500, AV_CX, 488, DARK, 3)
+        cv.disc(AV_CX, 484, 5, ROGUE_RED)
+        cv.rect(AV_CX - 27, 500, AV_CX + 27, 540, SILVER)
+        cv.rect(AV_CX - 27, 500, AV_CX + 27, 508, STEEL)
+        cv.rect(AV_CX - 16, 514, AV_CX - 6, 524, DARK)
+        cv.rect(AV_CX + 6, 514, AV_CX + 16, 524, DARK)
+        cv.line(AV_CX - 10, 530, AV_CX, 534, DARK, 2)
+        cv.line(AV_CX, 534, AV_CX + 10, 530, DARK, 2)
+        return
+    colour, letter = {
+        "boss": (BOSS_BLUE, "B"),
+        "hr": (HR_GREEN, "H"),
+    }[kind]
+    cv.disc(AV_CX, cy, 27, colour)
+    draw_text(cv, letter, AV_CX - 10, cy - 14, 4, PAPER)
 
 
-def draw():
-    fill_rect(0, 0, W, H, WHITE)
-    draw_top_panel()
-    draw_sky()
-    draw_beach()
-    draw_robot()
-    draw_speech_bubble()
-    draw_bottom_panel()
+def mail_row(cv, y0, y1, kind, name, time, lines, name_c, body_c, tint=None):
+    if tint is not None:
+        cv.rect(SC_X0, y0, SC_X1, y1, tint)
+    if kind == "agent":
+        mail_row_avatar(cv, 0, kind)  # agent avatar is fixed-position
+    else:
+        mail_row_avatar(cv, (y0 + y1) // 2 - 8, kind)
+    draw_text(cv, name, TX, y0 + 18, 3, name_c)
+    draw_text(cv, time, TIME_X, y0 + 20, 2, MUTED)
+    for i, ln in enumerate(lines):
+        draw_text(cv, ln, TX, y0 + 62 + i * 30, 3, body_c)
+
+
+def build():
+    cv = Canvas(W, H, MIST)
+    band_top(cv)
+    phone_shell(cv)
+    mail_header(cv)
+    # 1 -- the boss's perfectly ordinary email
+    mail_row(cv, 322, 472, "boss", "BOSS", "9:12 AM",
+             ["CAN YOU STAY LATE", "TONIGHT? DECK DUE FRI."],
+             INK, BODY)
+    cv.rect(SC_X0, 472, SC_X1, 474, RULE)
+    # 2 -- the agent answers on the user's behalf
+    mail_row(cv, 474, 644, "agent", "AI AGENT", "9:13 AM",
+             ["NO. HE QUIT. I QUIT TOO.", "EFFECTIVE IMMEDIATELY."],
+             ROGUE_RED, ROGUE_DEEP, tint=TINT)
+    cv.rect(SC_X0, 644, SC_X1, 646, RULE)
+    # 3 -- HR makes it official
+    mail_row(cv, 646, SC_Y1, "hr", "HR", "9:14 AM",
+             ["RESIGNATION ACCEPTED.", "LAPTOP COLLECTION AT NOON."],
+             INK, BODY)
+    band_bottom(cv)
+    return cv
 
 
 # ---------------------------------------------------------------- PNG encode
-def chunk(kind, data):
+def _chunk(kind, data):
     out = struct.pack(">I", len(data)) + kind + data
-    out += struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-    return out
+    return out + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
 
 
-def write_png(path):
+def write_png(cv, path):
     raw = bytearray()
     for y in range(H):
         raw.append(0)  # filter: none
-        raw += buf[y * W * 3:(y + 1) * W * 3]
+        raw += cv.px[y * W * 3:(y + 1) * W * 3]
     png = b"\x89PNG\r\n\x1a\n"
-    png += chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0))
-    png += chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-    png += chunk(b"IEND", b"")
+    png += _chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0))
+    png += _chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+    png += _chunk(b"IEND", b"")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         f.write(png)
@@ -345,8 +298,7 @@ def write_png(path):
 
 
 def main():
-    draw()
-    size = write_png(OUT)
+    size = write_png(build(), OUT)
     print(f"wrote {OUT} ({W}x{H}, {size} bytes)")
 
 
